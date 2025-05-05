@@ -77,7 +77,7 @@ log "Installing cert-manager..."
 helm upgrade --install cert-manager jetstack/cert-manager \
   --namespace "${CERT_NAMESPACE}" \
   --version "${CERT_MANAGER_VERSION}" \
-  --set crds.enabled \
+  --set crds.enabled=true \
   --set webhook.timeoutSeconds=30
 
 wait_for_deployment cert-manager "${CERT_NAMESPACE}"

@@ -47,6 +47,7 @@ class OpenStackController {
 			this._client = new OpenStack(config, auth, logger);
 
 			await this._client.authenticate(undefined, true, 10, 15000);
+
 			logger.success('Successfully authenticated with OpenStack');
 
 			return this;
@@ -767,6 +768,318 @@ class OpenStackController {
 			logger.success(`Floating IP associated with server successfully`);
 		} catch (error) {
 			logger.error(`Failed to associate floating IP: ${error?.response?.data?.NeutronError?.message || error.message}`);
+			throw error;
+		}
+	}
+
+	/**
+	 * Create a load balancer if it doesn't exist
+	 * @param {Object} lbConfig - Load balancer configuration
+	 * @param {Object} resources - Resource mappings (networks, subnets, floating IPs)
+	 * @returns {Promise<Object>} Created or existing load balancer
+	 */
+	async createLoadBalancer(lbConfig, resources) {
+		try {
+			logger.info(`Creating load balancer: ${lbConfig.name}`);
+
+			const authClient = this.getAuthenticatedAxios();
+			const loadBalancersResponse = await authClient.get('loadbalance/v2/loadbalancers');
+			const loadBalancers = loadBalancersResponse.data.loadbalancers;
+			const existingLB = loadBalancers.find((lb) => lb.name === lbConfig.name);
+
+			if (existingLB) {
+				logger.info(`Load balancer ${lbConfig.name} already exists, using existing load balancer`);
+				return existingLB;
+			}
+
+			const subnet = resources.subnets.find((s) => s.name === lbConfig.subnet);
+			if (!subnet) {
+				throw new Error(`Subnet ${lbConfig.subnet} not found`);
+			}
+
+			const loadBalancerData = {
+				name: lbConfig.name,
+				vip_subnet_id: subnet.id,
+				admin_state_up: true,
+			};
+
+			const loadBalancerResponse = await authClient.post('loadbalance/v2/loadbalancers', {
+				loadbalancer: loadBalancerData,
+			});
+
+			const loadBalancer = loadBalancerResponse.data.loadbalancer;
+			logger.success(`Load balancer ${lbConfig.name} created successfully`);
+
+			if (lbConfig.floating_ip) {
+				const floatingIp = resources.floatingIps.find((ip) => ip.name === lbConfig.floating_ip);
+				if (floatingIp) {
+					logger.info(`Associating floating IP ${floatingIp.name} with load balancer ${lbConfig.name}`);
+					await this.associateFloatingIPWithLoadBalancer(floatingIp.id, loadBalancer.id);
+				}
+			}
+
+			return loadBalancer;
+		} catch (error) {
+			logger.error(`Failed to create load balancer: ${error.response?.data?.faultstring || error.message}`);
+			throw error;
+		}
+	}
+
+	/**
+	 * Associate a floating IP with a load balancer
+	 * @param {String} floatingIpId - ID of the floating IP
+	 * @param {String} loadBalancerId - ID of the load balancer
+	 */
+	async associateFloatingIPWithLoadBalancer(floatingIpId, loadBalancerId) {
+		try {
+			logger.info(`Associating floating IP ${floatingIpId} with load balancer ${loadBalancerId}`);
+
+			const authClient = this.getAuthenticatedAxios();
+
+			const loadBalancerResponse = await authClient.get(`loadbalance/v2/loadbalancers/${loadBalancerId}`);
+			const loadBalancer = loadBalancerResponse.data.loadbalancer;
+
+			if (!loadBalancer.vip_port_id) {
+				throw new Error(`Load balancer ${loadBalancerId} does not have a VIP port ID`);
+			}
+
+			await authClient.put(`network/v2.0/floatingips/${floatingIpId}`, {
+				floatingip: {
+					port_id: loadBalancer.vip_port_id,
+				},
+			});
+
+			logger.success(`Floating IP ${floatingIpId} associated with load balancer ${loadBalancerId} successfully`);
+		} catch (error) {
+			logger.error(`Failed to associate floating IP with load balancer: ${error.response?.data?.NeutronError?.message || error.message}`);
+			throw error;
+		}
+	}
+
+	/**
+	 * Wait for a load balancer to reach a specific status
+	 * @param {String} loadBalancerId - ID of the load balancer
+	 * @param {String} targetStatus - Status to wait for
+	 * @param {Number} timeout - Timeout in seconds
+	 */
+	async waitForLoadBalancerStatus(loadBalancerId, targetStatus, timeout = 300) {
+		try {
+			logger.waiting(`Waiting for load balancer ${loadBalancerId} to reach status ${targetStatus}`);
+
+			const authClient = this.getAuthenticatedAxios();
+			const startTime = Date.now();
+			const endTime = startTime + timeout * 1000;
+
+			while (Date.now() < endTime) {
+				const loadBalancerResponse = await authClient.get(`loadbalance/v2/loadbalancers/${loadBalancerId}`);
+				const loadBalancer = loadBalancerResponse.data.loadbalancer;
+
+				if (loadBalancer.provisioning_status === targetStatus) {
+					logger.info(`Load balancer ${loadBalancerId} reached status ${targetStatus}`);
+					return loadBalancer;
+				}
+
+				await new Promise((resolve) => setTimeout(resolve, 5000));
+
+				const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+				logger.progress(`Load balancer status: ${loadBalancer.provisioning_status}, waiting for ${targetStatus}`, Math.floor((elapsedSeconds / timeout) * 100));
+			}
+
+			throw new Error(`Timeout waiting for load balancer to reach status ${targetStatus}`);
+		} catch (error) {
+			logger.error(`Error waiting for load balancer status: ${error.message}`);
+			throw error;
+		}
+	}
+
+	/**
+	 * Create a load balancer listener
+	 * @param {Object} listenerConfig - Listener configuration
+	 * @returns {Promise<Object>} Created listener
+	 */
+	async createLoadBalancerListener(listenerConfig) {
+		try {
+			logger.info(`Creating load balancer listener: ${listenerConfig.name}`);
+
+			const authClient = this.getAuthenticatedAxios();
+			const listenersResponse = await authClient.get('loadbalance/v2/listeners');
+			const listeners = listenersResponse.data.listeners;
+			const existingListener = listeners.find((l) => l.name === listenerConfig.name);
+
+			if (existingListener) {
+				logger.info(`Listener ${listenerConfig.name} already exists, using existing listener`);
+				return existingListener;
+			}
+
+			await this.waitForLoadBalancerStatus(listenerConfig.loadbalancer_id, 'ACTIVE');
+
+			const listenerResponse = await authClient.post('loadbalance/v2/listeners', {
+				listener: {
+					name: listenerConfig.name,
+					protocol: listenerConfig.protocol,
+					protocol_port: listenerConfig.protocol_port,
+					loadbalancer_id: listenerConfig.loadbalancer_id,
+					admin_state_up: true,
+				},
+			});
+
+			const listener = listenerResponse.data.listener;
+			logger.success(`Listener ${listenerConfig.name} created successfully`);
+
+			await this.waitForLoadBalancerStatus(listenerConfig.loadbalancer_id, 'ACTIVE');
+
+			return listener;
+		} catch (error) {
+			logger.error(`Failed to create listener: ${error.response?.data?.faultstring || error.message}`);
+			throw error;
+		}
+	}
+
+	/**
+	 * Create a load balancer pool
+	 * @param {Object} poolConfig - Pool configuration
+	 * @returns {Promise<Object>} Created pool
+	 */
+	async createLoadBalancerPool(poolConfig) {
+		try {
+			logger.info(`Creating load balancer pool: ${poolConfig.name}`);
+
+			const authClient = this.getAuthenticatedAxios();
+			const poolsResponse = await authClient.get('loadbalance/v2/pools');
+			const pools = poolsResponse.data.pools;
+			const existingPool = pools.find((p) => p.name === poolConfig.name);
+
+			if (existingPool) {
+				logger.info(`Pool ${poolConfig.name} already exists, using existing pool`);
+				return existingPool;
+			}
+
+			await this.waitForLoadBalancerStatus(poolConfig.loadbalancer_id, 'ACTIVE');
+
+			const poolData = {
+				name: poolConfig.name,
+				protocol: poolConfig.protocol,
+				lb_algorithm: poolConfig.lb_algorithm,
+				admin_state_up: true,
+			};
+
+			if (poolConfig.listener_id) {
+				poolData.listener_id = poolConfig.listener_id;
+			} else if (poolConfig.loadbalancer_id) {
+				poolData.loadbalancer_id = poolConfig.loadbalancer_id;
+			}
+
+			const poolResponse = await authClient.post('loadbalance/v2/pools', {
+				pool: poolData,
+			});
+
+			const pool = poolResponse.data.pool;
+			logger.success(`Pool ${poolConfig.name} created successfully`);
+
+			await this.waitForLoadBalancerStatus(poolConfig.loadbalancer_id, 'ACTIVE');
+
+			return pool;
+		} catch (error) {
+			logger.error(`Failed to create pool: ${error.response?.data?.faultstring || error.message}`);
+			throw error;
+		}
+	}
+
+	/**
+	 * Create a health monitor
+	 * @param {Object} monitorConfig - Health monitor configuration
+	 * @returns {Promise<Object>} Created health monitor
+	 */
+	async createHealthMonitor(monitorConfig) {
+		try {
+			logger.info(`Creating health monitor: ${monitorConfig.name}`);
+
+			const authClient = this.getAuthenticatedAxios();
+			const monitorsResponse = await authClient.get('loadbalance/v2/healthmonitors');
+			const monitors = monitorsResponse.data.healthmonitors;
+			const existingMonitor = monitors.find((m) => m.name === monitorConfig.name);
+
+			if (existingMonitor) {
+				logger.info(`Health monitor ${monitorConfig.name} already exists, using existing monitor`);
+				return existingMonitor;
+			}
+
+			await this.waitForLoadBalancerStatus(monitorConfig.loadbalancer_id, 'ACTIVE');
+
+			const monitorResponse = await authClient.post('loadbalance/v2/healthmonitors', {
+				healthmonitor: {
+					name: monitorConfig.name,
+					pool_id: monitorConfig.pool_id,
+					type: monitorConfig.type,
+					delay: monitorConfig.delay,
+					timeout: monitorConfig.timeout,
+					max_retries: monitorConfig.max_retries,
+					max_retries_down: monitorConfig.max_retries_down,
+					http_method: monitorConfig.http_method,
+					url_path: monitorConfig.url_path,
+					expected_codes: monitorConfig.expected_codes,
+					admin_state_up: true,
+				},
+			});
+
+			const monitor = monitorResponse.data.healthmonitor;
+			logger.success(`Health monitor ${monitorConfig.name} created successfully`);
+
+			await this.waitForLoadBalancerStatus(monitorConfig.loadbalancer_id, 'ACTIVE');
+
+			return monitor;
+		} catch (error) {
+			logger.error(`Failed to create health monitor: ${error.response?.data?.faultstring || error.message}`);
+			throw error;
+		}
+	}
+
+	/**
+	 * Add a member to a load balancer pool
+	 * @param {Object} memberConfig - Pool member configuration
+	 * @returns {Promise<Object>} Created pool member
+	 */
+	async addPoolMember(memberConfig) {
+		try {
+			logger.info(`Adding member ${memberConfig.name} to pool ${memberConfig.pool_id}`);
+
+			const authClient = this.getAuthenticatedAxios();
+
+			const membersResponse = await authClient.get(`loadbalance/v2/pools/${memberConfig.pool_id}/members`);
+			const members = membersResponse.data.members;
+			const existingMember = members.find((m) => m.address === memberConfig.address && m.protocol_port === memberConfig.protocol_port);
+
+			if (existingMember) {
+				logger.info(`Member with address ${memberConfig.address} and port ${memberConfig.protocol_port} already exists in pool ${memberConfig.pool_id}`);
+				return existingMember;
+			}
+
+			await this.waitForLoadBalancerStatus(memberConfig.loadbalancer_id, 'ACTIVE');
+
+			const memberData = {
+				name: memberConfig.name,
+				address: memberConfig.address,
+				protocol_port: memberConfig.protocol_port,
+				subnet_id: memberConfig.subnet_id,
+				admin_state_up: true,
+			};
+
+			if (memberConfig.monitor_port) {
+				memberData.monitor_port = memberConfig.monitor_port;
+			}
+
+			const memberResponse = await authClient.post(`loadbalance/v2/pools/${memberConfig.pool_id}/members`, {
+				member: memberData,
+			});
+
+			const member = memberResponse.data.member;
+			logger.success(`Member ${memberConfig.name} added to pool ${memberConfig.pool_id} successfully`);
+
+			await this.waitForLoadBalancerStatus(memberConfig.loadbalancer_id, 'ACTIVE');
+
+			return member;
+		} catch (error) {
+			logger.error(`Failed to add member to pool: ${error.response?.data?.faultstring || error.message}`);
 			throw error;
 		}
 	}

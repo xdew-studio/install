@@ -390,13 +390,12 @@ class OpenStackController {
 	async createVM(vmConfig, resources) {
 		try {
 			logger.info(`Creating VM: ${vmConfig.name}`);
-			const serversResponse = await this._client.Compute.serversGet({
-				name: vmConfig.name,
-			});
+			const serversResponse = await this._client.Compute.serversGet();
 			const servers = serversResponse.data.servers;
-			if (servers.length > 0) {
+			const existingServer = servers.find((s) => s.name === vmConfig.name);
+			if (existingServer) {
 				logger.info(`VM ${vmConfig.name} already exists, using existing VM`);
-				return servers[0];
+				return existingServer;
 			}
 
 			const imagesResponse = await this._client.Compute.imagesGet();
@@ -767,98 +766,6 @@ class OpenStackController {
 			logger.success(`Floating IP associated with server successfully`);
 		} catch (error) {
 			logger.error(`Failed to associate floating IP: ${error?.response?.data?.NeutronError?.message || error.message}`);
-			throw error;
-		}
-	}
-
-	/**
-	 * Create a load balancer
-	 * @param {Object} lbConfig - Load balancer configuration
-	 * @param {Object} resources - Resource mappings (networks, subnets, etc.)
-	 * @returns {Promise<Object>} Created load balancer
-	 */
-	async createLoadBalancer(lbConfig, resources) {
-		try {
-			logger.info(`Creating load balancer: ${lbConfig.name}`);
-
-			const loadBalancersResponse = await this._client.LoadBalancer.loadbalancersGet();
-			const loadBalancers = loadBalancersResponse.data.loadbalancers;
-			const existingLb = loadBalancers.find((lb) => lb.name === lbConfig.name);
-
-			if (existingLb) {
-				logger.info(`Load balancer ${lbConfig.name} already exists, using existing load balancer`);
-				return existingLb;
-			}
-
-			const subnet = resources.subnets.find((s) => s.name === lbConfig.subnet);
-			if (!subnet) {
-				throw new Error(`Subnet ${lbConfig.subnet} not found`);
-			}
-
-			const loadBalancerResponse = await this._client.LoadBalancer.loadbalancersPost({
-				loadbalancer: {
-					name: lbConfig.name,
-					vip_subnet_id: subnet.id,
-					provider: 'octavia',
-				},
-			});
-			const loadBalancer = loadBalancerResponse.data.loadbalancer;
-
-			await this.waitForLoadBalancerStatus(loadBalancer.id, 'ACTIVE');
-
-			logger.success(`Load balancer ${lbConfig.name} created successfully`);
-
-			if (lbConfig.floating_ip) {
-				const floatingIp = resources.floatingIps.find((ip) => ip.name === lbConfig.floating_ip);
-				if (floatingIp) {
-					await this._client.LoadBalancer.loadbalancersByLbIdAssociateFloatingIpPost({
-						lbId: loadBalancer.id,
-						floatingIpId: floatingIp.id,
-					});
-					logger.info(`Associated floating IP ${lbConfig.floating_ip} with load balancer`);
-				}
-			}
-
-			return loadBalancer;
-		} catch (error) {
-			logger.error(`Failed to create load balancer: ${error.message}`);
-			throw error;
-		}
-	}
-
-	/**
-	 * Wait for a load balancer to reach a specific status
-	 * @param {String} loadBalancerId - ID of the load balancer
-	 * @param {String} targetStatus - Status to wait for
-	 * @param {Number} timeout - Timeout in seconds
-	 */
-	async waitForLoadBalancerStatus(loadBalancerId, targetStatus, timeout = 300) {
-		try {
-			logger.waiting(`Waiting for load balancer ${loadBalancerId} to reach status ${targetStatus}`);
-
-			const startTime = Date.now();
-			const endTime = startTime + timeout * 1000;
-
-			while (Date.now() < endTime) {
-				const loadBalancerResponse = await this._client.LoadBalancer.loadbalancersGetById({
-					id: loadBalancerId,
-				});
-				const loadBalancer = loadBalancerResponse.data.loadbalancer;
-
-				if (loadBalancer.provisioning_status === targetStatus) {
-					logger.info(`Load balancer ${loadBalancerId} reached status ${targetStatus}`);
-					return loadBalancer;
-				}
-
-				await new Promise((resolve) => setTimeout(resolve, 5000));
-
-				const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-				logger.progress(`Load balancer status: ${loadBalancer.provisioning_status}, waiting for ${targetStatus}`, Math.floor((elapsedSeconds / timeout) * 100));
-			}
-
-			throw new Error(`Timeout waiting for load balancer to reach status ${targetStatus}`);
-		} catch (error) {
-			logger.error(`Error waiting for load balancer status: ${error.message}`);
 			throw error;
 		}
 	}

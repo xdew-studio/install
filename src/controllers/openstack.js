@@ -488,6 +488,7 @@ class OpenStackController {
 					key_name: vmConfig.key_name,
 					metadata: {
 						subnet: vmConfig.subnet,
+						role: vmConfig.role || 'uncategorized',
 					},
 				},
 			});

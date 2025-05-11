@@ -34,7 +34,6 @@ const loadConfig = async (configPath = CONFIG_PATH) => {
 		logger.info(`Loading configuration from: ${configPath}`);
 
 		let config;
-		console.log('configPath', configPath);
 		if (configPath.endsWith('.js')) {
 			config = require(configPath);
 		} else {

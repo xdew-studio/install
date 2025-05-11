@@ -58,6 +58,10 @@ const run = async (config) => {
 			await cloudflareController.configureServiceCnames(config.cloudflare, config.cloudflare.records, originHostname, true);
 		}
 
+		if (config.storage.subdomain) {
+			await cloudflareController.configureServiceDns(config.cloudflare, [config.storage.subdomain], '10.0.4.10', false);
+		}
+
 		logger.success('DNS configuration completed successfully');
 		return {
 			success: true,

@@ -13,14 +13,11 @@ const run = async (config) => {
 	try {
 		logger.start('Creating OpenStack network resources');
 
-		// Initialize and authenticate the OpenStack client
 		await openstackController.authenticate(config.openstack.auth);
 
-		// Create or use existing network
 		const network = await openstackController.createNetwork(config.openstack.network);
 		logger.success(`Network created: ${network.name} (${network.id})`);
 
-		// Create or use existing subnets
 		const subnets = [];
 		for (const subnetConfig of config.openstack.network.subnets) {
 			const subnet = await openstackController.createSubnet(subnetConfig, network.id);
@@ -28,7 +25,6 @@ const run = async (config) => {
 			logger.success(`Subnet created: ${subnet.name} (${subnet.cidr})`);
 		}
 
-		// Create or use existing router and connect subnets
 		const subnetIds = subnets.map((subnet) => subnet.id);
 		const router = await openstackController.createRouter(
 			{

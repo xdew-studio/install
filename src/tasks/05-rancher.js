@@ -63,6 +63,7 @@ const run = async (config) => {
 			...config.openstack.vms.rancher,
 			user_data: userData,
 			ip: ip,
+			role: 'rancher',
 		};
 
 		const rancherVM = await openstackController.createVM(vm, resources);

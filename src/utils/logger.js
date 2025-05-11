@@ -2,6 +2,13 @@
  * Logging utility with colored output
  */
 
+const readline = require('readline');
+
+const rl = readline.createInterface({
+	input: process.stdin,
+	output: process.stdout,
+});
+
 const colors = {
 	reset: '\x1b[0m',
 	bright: '\x1b[1m',
@@ -79,6 +86,15 @@ const logger = {
 
 	waiting: (message) => {
 		console.log(formatMessage(colors.yellow, '[WAITING]', message));
+	},
+
+	promptUser: (message) => {
+		return new Promise((resolve) => {
+			rl.question(`${message} (y/n): `, (answer) => {
+				rl.close();
+				resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
+			});
+		});
 	},
 };
 

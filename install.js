@@ -7,22 +7,8 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const readline = require('readline');
 const { loadConfig } = require('./src/utils/config');
 const logger = require('./src/utils/logger');
-
-const rl = readline.createInterface({
-	input: process.stdin,
-	output: process.stdout,
-});
-
-const promptUser = (message) => {
-	return new Promise((resolve) => {
-		rl.question(`${message} (y/n): `, (answer) => {
-			resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
-		});
-	});
-};
 
 const loadTasks = async () => {
 	const tasksDir = path.join(__dirname, 'src', 'tasks');
@@ -55,12 +41,7 @@ const main = async () => {
 		for (const task of tasks) {
 			logger.start(`Running task: ${task.name}`);
 
-			if (task.name === '10-storage') {
-				await task.run(config);
-				await promptUser('Storage VM setup completed. Press y to continue with TrueNAS configuration');
-			} else {
-				await task.run(config);
-			}
+			await task.run(config);
 
 			logger.success(`Task ${task.name} completed successfully`);
 		}
@@ -71,7 +52,7 @@ const main = async () => {
 		logger.info(`- Kubernetes API: https://kubernetes.${config.general.domain}`);
 		logger.info(`- Projects created: ${config.kubernetes.projects.map((p) => p.name).join(', ')}`);
 
-		rl.close();
+		process.exit(0);
 	} catch (error) {
 		logger.error(`Installation failed: ${error.message}`);
 		logger.debug(error.stack);

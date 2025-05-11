@@ -5,7 +5,7 @@ RANCHER_AGENT_TOKEN=__RANCHER_AGENT_TOKEN__
 
 # Install prerequisites
 apt-get update
-apt-get install -y curl ca-certificates jq nfs-common
+apt-get install -y curl ca-certificates jq nfs-common zfsutils-linux
 
 # Calculate checksum dynamically from Rancher URL
 CHECKSUM=$(curl -sk "$RANCHER_URL/cacerts" | sha256sum | awk '{ print $1 }')

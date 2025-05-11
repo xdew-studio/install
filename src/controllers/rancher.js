@@ -166,6 +166,22 @@ class RancherController {
 			const response = await this._v1Client.post('/provisioning.cattle.io.clusters', clusterData);
 			const cluster = response.data;
 
+			// Important: Store the v3 cluster ID right after creation by attempting to find it
+			if (!cluster.status?.clusterName) {
+				logger.info('V3 cluster ID not found in initial response, waiting for it to be assigned');
+				// Try to get updated cluster information
+				for (let i = 0; i < 5; i++) {
+					await new Promise((resolve) => setTimeout(resolve, 5000));
+					const updatedCluster = await this.getCluster(cluster.metadata.name);
+					if (updatedCluster.status?.clusterName) {
+						logger.info(`V3 cluster ID found: ${updatedCluster.status.clusterName}`);
+						// Update the cluster object with the new information
+						Object.assign(cluster, updatedCluster);
+						break;
+					}
+				}
+			}
+
 			logger.success(`Kubernetes cluster ${cluster.metadata.name} created successfully`);
 			return cluster;
 		} catch (error) {
@@ -176,11 +192,6 @@ class RancherController {
 	}
 
 	/**
-	 * Get a specific cluster by ID or name using v1 API
-	 * @param {String} clusterIdOrName - Cluster ID or name
-	 * @returns {Promise<Object>} Cluster object
-	 */
-	/**
 	 * Get cluster information by ID or name
 	 * Routes to V1 or V3 API based on cluster ID format
 	 * @param {String} clusterIdOrName - ID or name of the cluster to retrieve
@@ -190,17 +201,17 @@ class RancherController {
 		try {
 			logger.info(`Getting cluster: ${clusterIdOrName}`);
 
-			const useV3Api = clusterIdOrName.includes('-');
+			const useV3Api = (clusterIdOrName.match(/-/g) || []).length === 3;
 			logger.debug(`Using ${useV3Api ? 'V3' : 'V1'} API for cluster: ${clusterIdOrName}`);
 
 			if (useV3Api) {
 				try {
-					const response = await this._v3Client.get(`/clusters/${clusterIdOrName}`);
+					const response = await this._client.get(`/clusters/${clusterIdOrName}`);
 					return response.data;
 				} catch (error) {
 					if (error.response && error.response.status === 404) {
 						logger.warn(`Cluster ${clusterIdOrName} not found in V3 API, falling back to cluster list search`);
-						const clustersResponse = await this._v3Client.get('/clusters');
+						const clustersResponse = await this._client.get('/clusters');
 						const cluster = clustersResponse.data.data.find((c) => c.id === clusterIdOrName || c.name === clusterIdOrName);
 
 						if (!cluster) {
@@ -239,47 +250,96 @@ class RancherController {
 	/**
 	 * Get registration token for a cluster
 	 * Note: Registration tokens might still use v3 API
-	 * @param {String} clusterId - Cluster ID
+	 * @param {String} clusterId - Cluster ID or name
+	 * @param {String} [providedV3ClusterId] - Optional explicit v3 cluster ID to use
 	 * @returns {Promise<Object>} Registration token and command
 	 */
-	async getRegistrationToken(clusterId) {
+	async getRegistrationToken(clusterId, providedV3ClusterId) {
 		try {
 			logger.info(`Getting registration token for cluster ${clusterId}`);
 
-			const v1Cluster = await this.getCluster(clusterId);
-			const v3ClusterId = v1Cluster.status?.clusterName;
+			// Use provided v3ClusterId if available, otherwise try to get it from the cluster
+			let v3ClusterId = providedV3ClusterId;
+
+			if (!v3ClusterId) {
+				// Try to get the v3ClusterId from the v1 cluster object
+				const v1Cluster = await this.getCluster(clusterId);
+				v3ClusterId = v1Cluster.status?.clusterName;
+
+				// If still not found, try to get it from the v3 clusters list
+				if (!v3ClusterId) {
+					logger.info('V3 cluster ID not found in v1 cluster, searching in v3 clusters');
+					try {
+						const clustersResponse = await this._client.get('/clusters');
+						const v3Cluster = clustersResponse.data.data.find((c) => c.name === clusterId || (v1Cluster.metadata && c.name === v1Cluster.metadata.name));
+
+						if (v3Cluster) {
+							v3ClusterId = v3Cluster.id;
+							logger.info(`Found v3 cluster ID: ${v3ClusterId}`);
+						}
+					} catch (error) {
+						logger.warn(`Error searching for v3 cluster: ${error.message}`);
+					}
+				}
+			}
+
+			if (!v3ClusterId) {
+				// If still not found, try one more approach by directly looking up the name
+				try {
+					const response = await this._client.get('/clusters', {
+						params: {
+							name: clusterId,
+						},
+					});
+
+					if (response.data && response.data.data && response.data.data.length > 0) {
+						v3ClusterId = response.data.data[0].id;
+						logger.info(`Found v3 cluster ID by name search: ${v3ClusterId}`);
+					}
+				} catch (error) {
+					logger.warn(`Error searching for v3 cluster by name: ${error.message}`);
+				}
+			}
 
 			if (!v3ClusterId) {
 				throw new Error('Could not determine v3 cluster ID for registration');
 			}
 
+			// Try to get existing registration token
 			let registrationToken;
 			try {
 				const tokensResponse = await this._client.get(`/clusters/${v3ClusterId}/clusterregistrationtokens`);
-				console.log(tokensResponse.data[0].token);
-				registrationToken = tokensResponse.data[0].token;
+				if (tokensResponse.data && tokensResponse.data.data && tokensResponse.data.data.length > 0) {
+					registrationToken = tokensResponse.data.data[0];
+					logger.info(`Found existing registration token: ${registrationToken.id}`);
+				} else {
+					logger.info('No existing registration tokens found');
+				}
 			} catch (error) {
-				logger.info('No existing registration token found, creating a new one');
+				logger.info(`No existing registration token found: ${error.message}`);
 			}
 
+			// Create a new token if no existing one found
 			if (!registrationToken) {
-				const tokenResponse = await this._client.post(`/clusters/${v3ClusterId}/clusterregistrationtokens`, {
+				logger.info(`Creating new registration token for cluster ${v3ClusterId}`);
+				const tokenResponse = await this._client.post(`/clusterregistrationtokens`, {
 					clusterId: v3ClusterId,
 					name: `token-${Date.now()}`,
 				});
 				registrationToken = tokenResponse.data;
 			}
 
+			// Wait for the token to generate a node command
 			let retries = 0;
-			while (!registrationToken.nodeCommand && retries < 5) {
+			while ((!registrationToken.nodeCommand || !registrationToken.token) && retries < 5) {
 				await new Promise((resolve) => setTimeout(resolve, 2000));
 				const tokenResponse = await this._client.get(`/clusterregistrationtokens/${registrationToken.id}`);
 				registrationToken = tokenResponse.data;
 				retries++;
 			}
 
-			if (!registrationToken.nodeCommand) {
-				throw new Error('Failed to generate node registration command');
+			if (!registrationToken.nodeCommand || !registrationToken.token) {
+				throw new Error('Failed to generate node registration command or token');
 			}
 
 			logger.success(`Registration token generated for cluster ${clusterId}`);
@@ -466,6 +526,43 @@ class RancherController {
 			logger.error(`Error waiting for cluster: ${error.message}`);
 			throw error;
 		}
+	}
+
+	/**
+	 * Wait for Rancher to be accessible
+	 * @param {String} rancherDomain - Rancher domain name
+	 * @param {Number} timeout - Timeout in seconds
+	 * @returns {Promise<Boolean>} - True if Rancher is accessible
+	 */
+	async waitForRancherAvailability(rancherDomain, timeout = 300) {
+		logger.waiting(`Waiting for Rancher to be accessible at https://${rancherDomain}`);
+
+		const startTime = Date.now();
+		const endTime = startTime + timeout * 1000;
+
+		while (Date.now() < endTime) {
+			try {
+				const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+				const response = await axios.get(`https://${rancherDomain}`, {
+					headers: { Accept: 'application/json' },
+					httpsAgent,
+				});
+
+				if (response.status === 200) {
+					logger.success(`Rancher is accessible at https://${rancherDomain}`);
+					return true;
+				}
+			} catch (error) {
+				// Suppress errors during polling
+			}
+
+			const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+			logger.progress(`Waiting for Rancher to be accessible...`, Math.floor((elapsedSeconds / timeout) * 100));
+
+			await new Promise((resolve) => setTimeout(resolve, 10000));
+		}
+
+		throw new Error(`Timed out waiting for Rancher to be accessible at https://${rancherDomain}`);
 	}
 
 	/**

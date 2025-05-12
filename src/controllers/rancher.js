@@ -100,6 +100,7 @@ class RancherController {
 				},
 				spec: {
 					kubernetesVersion: clusterConfig.version,
+					enableNetworkPolicy: true,
 					rkeConfig: {
 						chartValues: {
 							'rke2-canal': {},
@@ -131,7 +132,7 @@ class RancherController {
 						machineGlobalConfig: {
 							cni: 'canal',
 							'disable-kube-proxy': false,
-							'etcd-expose-metrics': false,
+							'etcd-expose-metrics': true,
 						},
 						machineSelectorConfig: [
 							{

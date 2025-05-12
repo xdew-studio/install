@@ -10,7 +10,10 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@kubernetes/client-node": "^1.2.0",
     "@netzreich/openstack-clients": "^1.2.1",
-    "cloudflare": "^4.2.0"
+    "axios": "^1.9.0",
+    "cloudflare": "^4.2.0",
+    "js-yaml": "^4.1.0"
   }
 }

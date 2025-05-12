@@ -209,9 +209,9 @@ const run = async (config) => {
 		logger.info('Generating kubeconfig for the cluster');
 		const kubeconfig = await rancherController.getKubeConfig(cluster.id);
 
-		const kubeconfigPath = path.join(dataDir, `${cluster.metadata.name}-kubeconfig.yaml`);
-		await fs.writeFile(kubeconfigPath, kubeconfig, 'utf8');
-		logger.success(`Kubeconfig written to ${kubeconfigPath}`);
+		await fs.writeFile(config.kubernetes.kubeconfigPath, kubeconfig, 'utf8');
+		await fs.chmod(config.kubernetes.kubeconfigPath, 0o600);
+		logger.success(`Kubeconfig written to ${config.kubernetes.kubeconfigPath}`);
 
 		const output = {
 			cluster: readyCluster,
@@ -222,7 +222,6 @@ const run = async (config) => {
 				masters: masterNodes.length,
 				workers: workerNodes.length,
 			},
-			kubeconfigPath,
 		};
 
 		logger.success('Kubernetes cluster and nodes deployment completed successfully');

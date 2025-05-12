@@ -1,0 +1,22 @@
+installCRDs: true
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+prometheus:
+  enabled: true
+  servicemonitor:
+    enabled: false
+    namespace: "__NAMESPACE__"
+    labels: {}
+    interval: 60s
+    scrapeTimeout: 30s
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1

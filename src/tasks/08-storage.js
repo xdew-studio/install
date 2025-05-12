@@ -1,11 +1,8 @@
 /**
  * Task to create the TrueNAS Scale VM with boot and storage volumes
- * Uses SSH from Rancher VM for initialization
  */
 const openstackController = require('../controllers/openstack');
 const logger = require('../utils/logger');
-const { NodeSSH } = require('node-ssh');
-const fs = require('fs');
 
 /**
  * Main task function to create the TrueNAS Scale VM
@@ -183,7 +180,6 @@ const run = async (config) => {
 
 			logger.success(`Made boot volume ${bootVolume.id} bootable`);
 		} catch (error) {
-			console.log(error.response?.data || error);
 			logger.warn(`Error making volume bootable: ${error.message}`);
 			// Continue anyway, as it might already be bootable
 		}

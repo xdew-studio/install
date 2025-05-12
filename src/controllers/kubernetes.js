@@ -600,6 +600,121 @@ class KubernetesController {
 			throw error;
 		}
 	}
+
+	/**
+	 * Trigger a rollout restart of a Kubernetes resource
+	 * @param {string} name - Name of the resource
+	 * @param {string} namespace - Namespace of the resource
+	 * @param {string} kind - Kind of the resource (e.g., Deployment, StatefulSet)
+	 * @param {Object} options - Additional options for the rollout
+	 * @returns {Promise<Object>} - Result of the rollout operation
+	 */
+	async rollout(name, namespace, kind, options = {}) {
+		if (!this._k8sAppsApi) {
+			throw new Error('Kubernetes controller is not initialized. Call initialize() first.');
+		}
+
+		try {
+			const resourceType = kind.toLowerCase();
+
+			logger.info(`Triggering rollout restart for ${kind} ${name} in namespace ${namespace}`);
+
+			// Execute kubectl rollout restart command
+			const { stdout, stderr } = await execPromise(`KUBECONFIG=${this._kubeConfigPath} kubectl rollout restart ${resourceType}/${name} -n ${namespace}`);
+
+			if (stderr && stderr.trim().length > 0) {
+				if (!stderr.includes('restarted')) {
+					logger.warn(`Rollout stderr: ${stderr}`);
+				}
+			}
+
+			logger.success(`Successfully triggered rollout for ${kind} ${name}`);
+			return {
+				success: true,
+				name,
+				namespace,
+				kind,
+				action: 'rollout_restarted',
+				message: stdout.trim(),
+			};
+		} catch (error) {
+			logger.error(`Failed to trigger rollout: ${error.message}`);
+			if (error.stderr) {
+				logger.error(`Error details: ${error.stderr}`);
+			}
+			throw error;
+		}
+	}
+
+	/**
+	 * Wait for a resource rollout to complete
+	 * @param {string} name - Name of the resource
+	 * @param {string} namespace - Namespace of the resource
+	 * @param {string} kind - Kind of the resource (e.g., Deployment, StatefulSet)
+	 * @param {string} timeout - Timeout for the rollout (default: '5m')
+	 * @param {Object} options - Additional options for the rollout
+	 * @returns {Promise<Object>} - Result of the rollout status operation
+	 */
+	async waitForRollout(name, namespace, kind, timeout = '5m', options = {}) {
+		if (!this._k8sAppsApi) {
+			throw new Error('Kubernetes controller is not initialized. Call initialize() first.');
+		}
+
+		try {
+			const resourceType = kind.toLowerCase();
+
+			logger.info(`Waiting for rollout completion of ${kind} ${name} in namespace ${namespace}...`);
+
+			// Execute kubectl rollout status command with timeout
+			const { stdout, stderr } = await execPromise(`KUBECONFIG=${this._kubeConfigPath} kubectl rollout status ${resourceType}/${name} -n ${namespace} --timeout=${timeout}`);
+
+			if (stderr && stderr.trim().length > 0) {
+				logger.warn(`Rollout status stderr: ${stderr}`);
+			}
+
+			const isSuccess = stdout.includes('successfully rolled out') || !stdout.includes('error') || stdout.includes('completed');
+
+			if (isSuccess) {
+				logger.success(`Rollout of ${kind} ${name} completed successfully`);
+				return {
+					success: true,
+					name,
+					namespace,
+					kind,
+					action: 'rollout_completed',
+					message: stdout.trim(),
+				};
+			} else {
+				logger.warn(`Rollout of ${kind} ${name} may not have completed successfully: ${stdout}`);
+				return {
+					success: false,
+					name,
+					namespace,
+					kind,
+					action: 'rollout_incomplete',
+					message: stdout.trim(),
+				};
+			}
+		} catch (error) {
+			if (error.stderr && error.stderr.includes('timed out')) {
+				logger.error(`Rollout timed out for ${params.kind} ${params.name}`);
+				return {
+					success: false,
+					name: params.name,
+					namespace: params.namespace,
+					kind: params.kind,
+					action: 'rollout_timeout',
+					message: error.stderr,
+				};
+			}
+
+			logger.error(`Failed to wait for rollout: ${error.message}`);
+			if (error.stderr) {
+				logger.error(`Error details: ${error.stderr}`);
+			}
+			throw error;
+		}
+	}
 }
 
 const controller = new KubernetesController();

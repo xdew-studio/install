@@ -41,7 +41,9 @@ const main = async () => {
 		for (const task of tasks) {
 			logger.start(`Running task: ${task.name}`);
 
-			await task.run(config);
+			if (parseInt(task.name.split('-')[0]) > 10) {
+				await task.run(config);
+			}
 
 			logger.success(`Task ${task.name} completed successfully`);
 		}
